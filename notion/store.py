@@ -14,7 +14,7 @@ from tzlocal import get_localzone
 from .logger import logger
 from .settings import CACHE_DIR
 from .utils import extract_id
-
+from icecream import ic
 
 class MissingClass(object):
     def __bool__(self):
@@ -246,21 +246,24 @@ class RecordStore(object):
             requestlist += [{"table": table, "id": extract_id(id)} for id in ids]
 
         if requestlist:
-            logger.debug(
-                "Calling 'getRecordValues' endpoint for requests: {}".format(
-                    requestlist
+            try:
+                logger.debug(
+                    "Calling 'getRecordValues' endpoint for requests: {}".format(
+                        requestlist
+                    )
                 )
-            )
-            results = self._client.post(
-                "getRecordValues", {"requests": requestlist}
-            ).json()["results"]
-            for request, result in zip(requestlist, results):
-                self._update_record(
-                    request["table"],
-                    request["id"],
-                    value=result.get("value"),
-                    role=result.get("role"),
-                )
+                results = self._client.post(
+                    "getRecordValues", {"requests": requestlist}
+                ).json()["results"]
+                for request, result in zip(requestlist, results):
+                    self._update_record(
+                        request["table"],
+                        request["id"],
+                        value=result.get("value"),
+                        role=result.get("role"),
+                    )
+            except Exception as e:
+                pass
 
     def get_current_version(self, table, id):
         values = self._get(table, id)
@@ -302,7 +305,6 @@ class RecordStore(object):
         self,
         collection_id,
         collection_view_id,
-        space_id,
         search="",
         type="table",
         aggregate=[],
@@ -325,37 +327,27 @@ class RecordStore(object):
             sort = [sort]
 
         data = {
+            "collection": {
+                "id": collection_id,
+                "spaceId": self._client.current_space.id
+            },
             "collectionView": {
                 "id": collection_view_id,
-                "spaceId": space_id
+                "spaceId": self._client.current_space.id
             },
             "loader": {
-                "reducers": {
-                    "collection_group_results": {
-                        "type": "results",
-                        "limit": limit,
+                'reducers': {
+                    'collection_group_results': {
+                        'limit': limit,
+                        'type': 'results',
                     },
                 },
-                "sort": sort,
                 "searchQuery": search,
-                "userId": self._client.current_user.id,
+                'sort': sort,
                 "userTimeZone": str(get_localzone()),
+                "type": 'reducer',
             },
-            "source": {
-                "id": collection_id,
-                "spaceId": space_id,
-                "type": "collection"
-            }
         }
-
-        if filter:
-            data["loader"]["filter"] = filter
-
-        if aggregate:
-            data["loader"]["aggregate"] = aggregate
-
-        if aggregations:
-            data["loader"]["aggregations"] = aggregations
 
         response = self._client.post("queryCollection", data).json()
 

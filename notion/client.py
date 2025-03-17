@@ -18,7 +18,8 @@ from .collection import (
     COLLECTION_VIEW_TYPES,
     TemplateBlock,
 )
-from .logger import logger
+
+import logging
 from .monitor import Monitor
 from .operations import operation_update_last_edited, build_operation
 from .settings import API_BASE_URL
@@ -27,6 +28,8 @@ from .store import RecordStore
 from .user import User
 from .utils import extract_id, now
 
+from icecream import ic
+logger = logging.getLogger(__name__)
 
 def create_session(client_specified_retry=None):
     """
@@ -37,9 +40,9 @@ def create_session(client_specified_retry=None):
         retry = client_specified_retry
     else:
         retry = Retry(
-            total=10,
-            backoff_factor=1,
-            status_forcelist=(429, 502, 503, 504),
+            5,
+            backoff_factor=0.3,
+            status_forcelist=(502, 503, 504),
             # CAUTION: adding 'POST' to this list which is not technically idempotent
             allowed_methods=(
                 "POST",
@@ -73,7 +76,9 @@ class NotionClient(object):
         email=None,
         password=None,
         client_specified_retry=None,
+        workspace=None
     ):
+        self.workspace = workspace
         self.session = create_session(client_specified_retry)
         if token_v2:
             self.session.cookies = cookiejar_from_dict({"token_v2": token_v2})
@@ -124,12 +129,33 @@ class NotionClient(object):
 
     def _update_user_info(self):
         records = self.post("loadUserContent", {}).json()["recordMap"]
+
         if not records["space"]:
             self._fetch_guest_space_data(records)
 
+        if self.workspace:
+            workspace_dict = {}
+            for x in records['space']:
+                workspace_dict[records['space'][x]['value']['name']] = x
+                
+                try:
+                    self.current_space = self.get_space(workspace_dict[self.workspace])
+                except:
+                    self.current_space = self.get_space(list(records["space"].keys())[0])
+                    logger.warning(f"Workspace {self.workspace} does not exist or invalid, defaulting to {self.current_space.name}")
+
+        else:
+            self.current_space = self.get_space(list(records["space"].keys())[0])
+            logger.warning(f"Workspace not provided or invalid, defaulting to {self.current_space.name}")
+
         self._store.store_recordmap(records)
         self.current_user = self.get_user(list(records["notion_user"].keys())[0])
-        self.current_space = self.get_space(list(records["space"].keys())[0])
+        # self.current_space = self.get_space(list(records["space"].keys())[0])
+
+        self.session.headers.update(
+            {"x-notion-active-user-header": self.current_user.id}
+        )
+
         return records
 
     def get_email_uid(self):
@@ -252,21 +278,24 @@ class NotionClient(object):
         url = urljoin(API_BASE_URL, endpoint)
         response = self.session.post(url, json=data)
         if response.status_code == 400:
-            logger.error(
-                "Got 400 error attempting to POST to {}, with data: {}".format(
-                    endpoint, json.dumps(data, indent=2)
+            if endpoint != 'getRecordValues':
+                logger.error(
+                    "Got 400 error attempting to POST to {}, with data: {}".format(
+                        endpoint, json.dumps(data, indent=2)
+                    )
                 )
-            )
-            raise HTTPError(
-                response.json().get(
-                    "message", "There was an error (400) submitting the request."
+                raise HTTPError(
+                    response.json().get(
+                        "message", "There was an error (400) submitting the request."
+                    )
                 )
-            )
+            
+            
         response.raise_for_status()
         return response
 
     def submit_transaction(self, operations, update_last_edited=True):
-
+        
         if not operations:
             return
 
@@ -287,6 +316,7 @@ class NotionClient(object):
             self._transaction_operations += operations
         else:
             data = {"operations": operations}
+            
             self.post("submitTransaction", data)
             self._store.run_local_operations(operations)
 
@@ -381,8 +411,7 @@ class NotionClient(object):
         args.update(kwargs)
 
         with self.as_atomic_transaction():
-
-            # create the new record
+            # create the new record 
             self.submit_transaction(
                 build_operation(
                     args=args, command="set", id=record_id, path=[], table=table
@@ -406,13 +435,14 @@ class NotionClient(object):
 
 class Transaction(object):
 
+    
     is_dummy_nested_transaction = False
 
     def __init__(self, client):
         self.client = client
 
     def __enter__(self):
-
+        
         if hasattr(self.client, "_transaction_operations"):
             # client is already in a transaction, so we'll just make this one a nullop and let the outer one handle it
             self.is_dummy_nested_transaction = True
