@@ -1,11 +1,10 @@
-import io
 import mimetypes
 import os
 import random
 import requests
 import time
 import uuid
-import zipfile
+from icecream import ic
 
 from cached_property import cached_property
 from copy import deepcopy
@@ -25,7 +24,6 @@ from .utils import (
     remove_signed_prefix_as_needed,
     get_by_path,
 )
-
 
 class Children(object):
 
@@ -52,6 +50,7 @@ class Children(object):
         return self._parent.get(self.child_list_key) or []
 
     def _get_block(self, id):
+
 
         block = self._client.get_block(id)
 
@@ -324,7 +323,6 @@ class Block(Record):
 
             # If it's not an alias, we actually remove the block
             with self._client.as_atomic_transaction():
-
                 # Mark the block as inactive
                 self._client.submit_transaction(
                     build_operation(
@@ -386,9 +384,8 @@ class Block(Record):
             list_args[position] = target_block.id
 
         with self._client.as_atomic_transaction():
-
             # First, remove the node, before we re-insert and re-activate it at the target location
-            self.remove()
+            #self.remove()
 
             if not self.is_alias:
                 # Set the parent_id of the moving block to the new parent, and mark it as active again
@@ -407,7 +404,7 @@ class Block(Record):
             else:
                 self._alias_parent = new_parent_id
 
-            # Add the moving block's ID to the "content" list of the new parent
+            # Add the moving block's ID to the "content" list of the new paren
             self._client.submit_transaction(
                 build_operation(
                     id=new_parent_id,
@@ -426,49 +423,6 @@ class Block(Record):
                 target_block.get("parent_id"),
             ]
         )
-
-    def extract_markdown(self):
-        task_id = self._client.post("https://www.notion.so/api/v3/enqueueTask", {
-            "task": {
-                "eventName": "exportBlock",
-                "request": {
-                    "block": {
-                        "id": self.id,
-                        "spaceId": self._client.current_space.id,
-                    },
-                    "recursive": False,
-                    "exportOptions": {
-                        "exportType": "markdown",
-                        "timeZone": "America/Los_Angeles",
-                        "locale": "en",
-                        "collectionViewExportType": "currentView",
-                        "includeContents": "no_files",
-                        "preferredViewMap": {}
-                    },
-                    "shouldExportComments": False
-                }
-            }
-        }).json()["taskId"]
-
-        for i in range(5000):
-            response = self._client.post("https://www.notion.so/api/v3/getTasks", {
-                "taskIds": [task_id]
-            }).json()
-            if response["results"][0]["state"] == "success":
-                break
-            time.sleep(0.25)
-
-        zip_url = response["results"][0]["status"]["exportURL"]
-
-        response = self._client.session.get(zip_url)
-        response.raise_for_status()
-
-        # unzip the contents in memory and read the contents of the file inside (there should only be one file, but check the name)
-        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-            names = z.namelist()
-            assert len(names) == 1, "Expected exactly one file in the zip"
-            with z.open(names[0]) as f:
-                return f.read().decode("utf-8")
 
 
 class DividerBlock(Block):
@@ -682,10 +636,19 @@ class EmbedOrUploadBlock(EmbedBlock):
 
         mimetype = mimetypes.guess_type(path)[0] or "text/plain"
         filename = os.path.split(path)[-1]
-
+        
         data = self._client.post(
             "getUploadFileUrl",
-            {"bucket": "secure", "name": filename, "contentType": mimetype},
+            {
+                "bucket": "secure",
+                "name": filename,
+                "contentType": mimetype,
+                "record": {
+                    "id": self.id,
+                    "spaceId": self.space_info["spaceId"],
+                    "table": "block"
+                },
+            },
         ).json()
 
         with open(path, "rb") as f:
